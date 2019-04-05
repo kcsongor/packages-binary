@@ -94,6 +94,10 @@ import qualified Data.IntMap     as IntMap
 import qualified Data.IntSet     as IntSet
 import qualified Data.Ratio      as R
 
+#if __GLASGOW_HASKELL__ >= 809
+import GHC.Exts (Matchability(..))
+#endif
+
 import qualified Data.Tree as T
 
 import Data.Array.Unboxed
@@ -933,7 +937,11 @@ instance Binary KindRep where
     put (KindRepTyConApp tc k) = putWord8 0 >> put tc >> put k
     put (KindRepVar bndr) = putWord8 1 >> put bndr
     put (KindRepApp a b) = putWord8 2 >> put a >> put b
+#if __GLASGOW_HASKELL__ >= 809
+    put (KindRepFun m a b) = putWord8 3 >> put m >> put a >> put b
+#else
     put (KindRepFun a b) = putWord8 3 >> put a >> put b
+#endif
     put (KindRepTYPE r) = putWord8 4 >> put r
     put (KindRepTypeLit sort r) = putWord8 5 >> put sort >> put r
 
@@ -943,7 +951,11 @@ instance Binary KindRep where
           0 -> KindRepTyConApp <$> get <*> get
           1 -> KindRepVar <$> get
           2 -> KindRepApp <$> get <*> get
+#if __GLASGOW_HASKELL__ >= 809
+          3 -> KindRepFun <$> get <*> get <*> get
+#else
           3 -> KindRepFun <$> get <*> get
+#endif
           4 -> KindRepTYPE <$> get
           5 -> KindRepTypeLit <$> get <*> get
           _ -> fail "GHCi.TH.Binary.putKindRep: invalid tag"
@@ -974,10 +986,18 @@ putTypeRep (App f x) = do
     put (2 :: Word8)
     putTypeRep f
     putTypeRep x
+#if __GLASGOW_HASKELL__ >= 809
+putTypeRep (Fun m arg res) = do
+    put (3 :: Word8)
+    putTypeRep m
+    putTypeRep arg
+    putTypeRep res
+#else
 putTypeRep (Fun arg res) = do
     put (3 :: Word8)
     putTypeRep arg
     putTypeRep res
+#endif
 putTypeRep _ = error "GHCi.TH.Binary.putTypeRep: Impossible"
 
 getSomeTypeRep :: Get SomeTypeRep
@@ -991,27 +1011,45 @@ getSomeTypeRep = do
         2 -> do SomeTypeRep f <- getSomeTypeRep
                 SomeTypeRep x <- getSomeTypeRep
                 case typeRepKind f of
+#if __GLASGOW_HASKELL__ >= 809
+                  Fun m arg res ->
+                    case m `eqTypeRep` (typeRep :: TypeRep 'Matchable) of
+                      Nothing -> failure "Kind mismatch" []
+                      Just HRefl ->
+#else
                   Fun arg res ->
-                      case arg `eqTypeRep` typeRepKind x of
-                        Just HRefl -> do
-                            case typeRepKind res `eqTypeRep` (typeRep :: TypeRep Type) of
-                                Just HRefl -> return $ SomeTypeRep $ mkTrApp f x
-                                _ -> failure "Kind mismatch" []
-                        _ -> failure "Kind mismatch"
-                             [ "Found argument of kind:      " ++ show (typeRepKind x)
-                             , "Where the constructor:       " ++ show f
-                             , "Expects an argument of kind: " ++ show arg
-                             ]
+#endif
+                        case arg `eqTypeRep` typeRepKind x of
+                          Just HRefl -> do
+                              case typeRepKind res `eqTypeRep` (typeRep :: TypeRep Type) of
+                                  Just HRefl -> return $ SomeTypeRep $ mkTrApp f x
+                                  _ -> failure "Kind mismatch" []
+                          _ -> failure "Kind mismatch"
+                               [ "Found argument of kind:      " ++ show (typeRepKind x)
+                               , "Where the constructor:       " ++ show f
+                               , "Expects an argument of kind: " ++ show arg
+                               ]
                   _ -> failure "Applied non-arrow type"
                        [ "Applied type: " ++ show f
                        , "To argument:  " ++ show x
                        ]
-        3 -> do SomeTypeRep arg <- getSomeTypeRep
+        3 -> do
+#if __GLASGOW_HASKELL__ >= 809
+                SomeTypeRep m <- getSomeTypeRep
+#endif
+                SomeTypeRep arg <- getSomeTypeRep
                 SomeTypeRep res <- getSomeTypeRep
                 case typeRepKind arg `eqTypeRep` (typeRep :: TypeRep Type) of
                   Just HRefl ->
                       case typeRepKind res `eqTypeRep` (typeRep :: TypeRep Type) of
-                        Just HRefl -> return $ SomeTypeRep $ Fun arg res
+                        Just HRefl ->
+#if __GLASGOW_HASKELL__ >= 809
+                          case typeRepKind m `eqTypeRep` (typeRep :: TypeRep Matchability) of
+                            Just HRefl -> return $ SomeTypeRep $ Fun m arg res
+                            Nothing -> failure "Kind mismatch" []
+#else
+                          return $ SomeTypeRep $ Fun arg res
+#endif
                         Nothing -> failure "Kind mismatch" []
                   Nothing -> failure "Kind mismatch" []
         _ -> failure "Invalid SomeTypeRep" []
